@@ -45,16 +45,37 @@ def get_relevant_news(keywords: str) -> None:
 
 
 @app.command()
-def get_all_events(limit: int = 5, sort_by: str = "number_of_markets") -> None:
+def get_all_events(limit: int = 5, sort_by: str = "number_of_markets", fetch_limit: int = 100, max_fetch: int = None) -> None:
     """
     Query Polymarket's events
+    
+    Args:
+        limit: Maximum number of events to return in final result
+        sort_by: Sort by "number_of_markets" or other criteria
+        fetch_limit: Number of events to fetch per API request (default: 100)
+        max_fetch: Maximum total number of events to fetch from API. 
+                   If None, defaults to fetch_limit (only one request).
+                   Set to a larger value to fetch more events with pagination.
     """
-    print(f"limit: int = {limit}, sort_by: str = {sort_by}")
-    events = polymarket.get_all_events()
+    # Default to only one request if max_fetch is not specified
+    if max_fetch is None:
+        max_fetch = fetch_limit
+    
+    print(f"limit: int = {limit}, sort_by: str = {sort_by}, fetch_limit: int = {fetch_limit}, max_fetch: {max_fetch}")
+    # Get tradeable events using API-level filtering with pagination
+    events = polymarket.get_all_events(tradeable_only=True, limit=fetch_limit, max_events=max_fetch)
+    print(f"Retrieved {len(events)} events from API (pre-filtered for tradeable)")
+    # Additional client-side filtering for restricted events (API doesn't support restricted parameter)
     events = polymarket.filter_events_for_trading(events)
+    print(f"After filtering: {len(events)} tradeable events")
+    
     if sort_by == "number_of_markets":
-        events = sorted(events, key=lambda x: len(x.markets), reverse=True)
+        # markets is a comma-separated string, count the number of markets
+        events = sorted(events, key=lambda x: len(x.markets.split(',')) if x.markets else 0, reverse=True)
+    
     events = events[:limit]
+    print(f"Final result: {len(events)} events")
+    print("\n=== Events ===")
     pprint(events)
 
 

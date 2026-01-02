@@ -235,43 +235,122 @@ class Polymarket:
             market["clob_token_ids"] = token_id
         return market
 
-    def get_all_events(self) -> "list[SimpleEvent]":
+    def get_all_events(self, tradeable_only: bool = False, limit: int = 100, max_events: int = None) -> "list[SimpleEvent]":
+        """
+        Get all events from Polymarket API with pagination support.
+        
+        Args:
+            tradeable_only: If True, use API query parameters to filter for tradeable events
+                          (active=True, closed=False, archived=False).
+                          If False, return all events without API-level filtering.
+            limit: Number of events to fetch per API request (default: 100).
+            max_events: Maximum total number of events to fetch. If None, fetches all available events.
+        """
         events = []
-        res = httpx.get(self.gamma_events_endpoint)
-        if res.status_code == 200:
-            print(len(res.json()))
-            for event in res.json():
-                try:
-                    print(1)
-                    event_data = self.map_api_to_event(event)
-                    events.append(SimpleEvent(**event_data))
-                except Exception as e:
-                    print(e)
-                    pass
+        offset = 0
+        total_fetched = 0
+        
+        base_params = {}
+        if tradeable_only:
+            # Use API query parameters to filter at the source
+            base_params = {
+                "active": True,
+                "closed": False,
+                "archived": False,
+            }
+        
+        while True:
+            # Build request parameters with pagination
+            params = base_params.copy()
+            params["limit"] = limit
+            params["offset"] = offset
+            
+            res = httpx.get(self.gamma_events_endpoint, params=params)
+            if res.status_code == 200:
+                api_events = res.json()
+                batch_size = len(api_events)
+                
+                if batch_size == 0:
+                    # No more events available
+                    break
+                
+                print(f"API returned {batch_size} events (offset={offset}, limit={limit}, tradeable_only={tradeable_only})")
+                
+                for event in api_events:
+                    try:
+                        event_data = self.map_api_to_event(event)
+                        events.append(SimpleEvent(**event_data))
+                        total_fetched += 1
+                        # Stop if we've reached max_events
+                        if max_events is not None and total_fetched >= max_events:
+                            break
+                    except Exception as e:
+                        print(f"Error creating SimpleEvent for event {event.get('id', 'unknown')}: {e}")
+                        pass
+                
+                # Stop if we've reached max_events
+                if max_events is not None and total_fetched >= max_events:
+                    break
+                
+                # Stop if we got fewer events than requested (last page)
+                if batch_size < limit:
+                    break
+                
+                # Move to next page
+                offset += limit
+            else:
+                print(f"API request failed with status code: {res.status_code}")
+                break
+        
+        print(f"Total fetched: {len(events)} events")
         return events
 
     def map_api_to_event(self, event) -> SimpleEvent:
-        description = event["description"] if "description" in event.keys() else ""
+        """
+        Map API event data to SimpleEvent object.
+        Handles missing fields gracefully.
+        """
+        description = event.get("description", "")
+        end_date = event.get("endDate", "")
+        ticker = event.get("ticker", "")
+        slug = event.get("slug", "")
+        title = event.get("title", "")
+        
+        # Handle markets - some events might not have markets
+        markets = event.get("markets", [])
+        if markets:
+            market_ids = ",".join([str(x.get("id", "")) for x in markets if x.get("id")])
+        else:
+            market_ids = ""
+        
         return {
-            "id": int(event["id"]),
-            "ticker": event["ticker"],
-            "slug": event["slug"],
-            "title": event["title"],
+            "id": int(event.get("id", 0)),
+            "ticker": ticker,
+            "slug": slug,
+            "title": title,
             "description": description,
-            "active": event["active"],
-            "closed": event["closed"],
-            "archived": event["archived"],
-            "new": event["new"],
-            "featured": event["featured"],
-            "restricted": event["restricted"],
-            "end": event["endDate"],
-            "markets": ",".join([x["id"] for x in event["markets"]]),
+            "active": event.get("active", False),
+            "closed": event.get("closed", False),
+            "archived": event.get("archived", False),
+            "new": event.get("new", False),
+            "featured": event.get("featured", False),
+            "restricted": event.get("restricted", False),
+            "end": end_date,
+            "markets": market_ids,
         }
 
     def filter_events_for_trading(
         self, events: "list[SimpleEvent]"
     ) -> "list[SimpleEvent]":
         tradeable_events = []
+        filter_stats = {
+            "not_active": 0,
+            "restricted": 0,
+            "archived": 0,
+            "closed": 0,
+            "total": len(events)
+        }
+        
         for event in events:
             if (
                 event.active
@@ -280,11 +359,104 @@ class Polymarket:
                 and not event.closed
             ):
                 tradeable_events.append(event)
+            else:
+                # Track why event was filtered out
+                if not event.active:
+                    filter_stats["not_active"] += 1
+                if event.restricted:
+                    filter_stats["restricted"] += 1
+                if event.archived:
+                    filter_stats["archived"] += 1
+                if event.closed:
+                    filter_stats["closed"] += 1
+        
+        # Print summary
+        if filter_stats["total"] > 0:
+            print(f"\n=== Filtering Summary ===")
+            print(f"Total events: {filter_stats['total']}")
+            print(f"Filtered out - restricted: {filter_stats['restricted']}")
+            print(f"Filtered out - not active: {filter_stats['not_active']}")
+            print(f"Filtered out - archived: {filter_stats['archived']}")
+            print(f"Filtered out - closed: {filter_stats['closed']}")
+            print(f"Tradeable events: {len(tradeable_events)}")
+        
         return tradeable_events
 
-    def get_all_tradeable_events(self) -> "list[SimpleEvent]":
-        all_events = self.get_all_events()
-        return self.filter_events_for_trading(all_events)
+    def get_all_tradeable_events(self, limit: int = 100, max_events: int = None, min_tradeable: int = 1) -> "list[SimpleEvent]":
+        """
+        Get all tradeable events. Uses API-level filtering and client-side filtering.
+        Continues fetching until minimum number of tradeable events is found.
+        
+        Args:
+            limit: Number of events to fetch per API request (default: 100).
+            max_events: Maximum total number of events to fetch from API. If None, fetches until min_tradeable is met.
+            min_tradeable: Minimum number of tradeable events to find before stopping (default: 1).
+        """
+        tradeable_events = []
+        offset = 0
+        total_fetched = 0
+        max_total_fetch = max_events if max_events is not None else float('inf')
+        
+        base_params = {
+            "active": True,
+            "closed": False,
+            "archived": False,
+        }
+        
+        while len(tradeable_events) < min_tradeable and total_fetched < max_total_fetch:
+            # Build request parameters with pagination
+            params = base_params.copy()
+            params["limit"] = limit
+            params["offset"] = offset
+            
+            res = httpx.get(self.gamma_events_endpoint, params=params)
+            if res.status_code == 200:
+                api_events = res.json()
+                batch_size = len(api_events)
+                
+                if batch_size == 0:
+                    # No more events available
+                    print(f"No more events available. Found {len(tradeable_events)} tradeable events.")
+                    break
+                
+                print(f"API returned {batch_size} events (offset={offset}, limit={limit}, tradeable_only=True)")
+                
+                # Convert API events to SimpleEvent objects
+                batch_events = []
+                for event in api_events:
+                    try:
+                        event_data = self.map_api_to_event(event)
+                        batch_events.append(SimpleEvent(**event_data))
+                        total_fetched += 1
+                    except Exception as e:
+                        print(f"Error creating SimpleEvent for event {event.get('id', 'unknown')}: {e}")
+                        pass
+                
+                # Filter for tradeable events
+                filtered_batch = self.filter_events_for_trading(batch_events)
+                tradeable_events.extend(filtered_batch)
+                
+                print(f"Batch filtered: {len(filtered_batch)} tradeable out of {len(batch_events)} events")
+                print(f"Total tradeable so far: {len(tradeable_events)}")
+                
+                # Stop if we got fewer events than requested (last page)
+                if batch_size < limit:
+                    print(f"Reached end of available events. Found {len(tradeable_events)} tradeable events.")
+                    break
+                
+                # Stop if we've reached max_total_fetch
+                if total_fetched >= max_total_fetch:
+                    print(f"Reached max fetch limit ({max_total_fetch}). Found {len(tradeable_events)} tradeable events.")
+                    break
+                
+                # Move to next page
+                offset += limit
+            else:
+                print(f"API request failed with status code: {res.status_code}")
+                break
+        
+        print(f"Total fetched: {total_fetched} events, Total tradeable: {len(tradeable_events)} events")
+        return tradeable_events
 
     def get_sampling_simplified_markets(self) -> "list[SimpleEvent]":
         markets = []

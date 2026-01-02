@@ -44,31 +44,56 @@ class Trader:
         try:
             self.pre_trade_logic()
 
+            print("Step 1: Getting tradeable events...")
             events = self.polymarket.get_all_tradeable_events()
             print(f"1. FOUND {len(events)} EVENTS")
+            
+            if len(events) == 0:
+                print("No tradeable events found. Exiting.")
+                return
 
+            print("Step 2: Filtering events with RAG (this may take a while)...")
             filtered_events = self.agent.filter_events_with_rag(events)
             print(f"2. FILTERED {len(filtered_events)} EVENTS")
+            
+            if len(filtered_events) == 0:
+                print("No events passed RAG filtering. Exiting.")
+                return
 
+            print("Step 3: Mapping events to markets...")
             markets = self.agent.map_filtered_events_to_markets(filtered_events)
-            print()
             print(f"3. FOUND {len(markets)} MARKETS")
+            
+            if len(markets) == 0:
+                print("No markets found. Exiting.")
+                return
 
-            print()
+            print("Step 4: Filtering markets with RAG...")
             filtered_markets = self.agent.filter_markets(markets)
             print(f"4. FILTERED {len(filtered_markets)} MARKETS")
+            
+            if len(filtered_markets) == 0:
+                print("No markets passed RAG filtering. Exiting.")
+                return
 
+            print("Step 5: Calculating best trade...")
             market = filtered_markets[0]
             best_trade = self.agent.source_best_trade(market)
             print(f"5. CALCULATED TRADE {best_trade}")
 
+            print("Step 6: Formatting trade amount...")
             amount = self.agent.format_trade_prompt_for_execution(best_trade)
+            print(f"6. TRADE AMOUNT: {amount}")
             # Please refer to TOS before uncommenting: polymarket.com/tos
             # trade = self.polymarket.execute_market_order(market, amount)
-            # print(f"6. TRADED {trade}")
+            # print(f"7. TRADED {trade}")
 
         except Exception as e:
-            print(f"Error {e} \n \n Retrying")
+            import traceback
+            print(f"Error: {e}")
+            print("\nFull traceback:")
+            traceback.print_exc()
+            print("\nRetrying...")
             self.one_best_trade()
 
     def maintain_positions(self):

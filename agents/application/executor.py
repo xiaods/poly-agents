@@ -138,13 +138,38 @@ class Executor:
         self, filtered_events: "list[SimpleEvent]"
     ) -> "list[SimpleMarket]":
         markets = []
-        for e in filtered_events:
-            data = json.loads(e[0].json())
-            market_ids = data["metadata"]["markets"].split(",")
-            for market_id in market_ids:
-                market_data = self.gamma.get_market(market_id)
-                formatted_market_data = self.polymarket.map_api_to_market(market_data)
-                markets.append(formatted_market_data)
+        for idx, e in enumerate(filtered_events):
+            try:
+                # filtered_events is a list of tuples from RAG: (Document, score)
+                if isinstance(e, tuple):
+                    event_doc = e[0]
+                    data = json.loads(event_doc.json())
+                else:
+                    data = json.loads(e.json())
+                
+                market_ids_str = data.get("metadata", {}).get("markets", "")
+                if not market_ids_str:
+                    print(f"Warning: Event {idx} has no markets")
+                    continue
+                    
+                market_ids = market_ids_str.split(",")
+                print(f"Processing event {idx}: {len(market_ids)} markets")
+                
+                for market_id in market_ids:
+                    if not market_id or not market_id.strip():
+                        continue
+                    try:
+                        market_data = self.gamma.get_market(market_id.strip())
+                        formatted_market_data = self.polymarket.map_api_to_market(market_data)
+                        markets.append(formatted_market_data)
+                    except Exception as market_error:
+                        print(f"Error fetching market {market_id}: {market_error}")
+                        continue
+            except Exception as event_error:
+                print(f"Error processing event {idx}: {event_error}")
+                import traceback
+                traceback.print_exc()
+                continue
         return markets
 
     def filter_markets(self, markets) -> "list[tuple]":
