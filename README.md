@@ -52,14 +52,14 @@ This repo is inteded for use with Python 3.9
 1. Clone the repository
 
    ```
-   git clone https://github.com/{username}/polymarket-agents.git
-   cd polymarket-agents
+   git clone https://github.com/xiaods/poly-agents
+   cd poly-agents
    ```
 
 2. Create the virtual environment
 
    ```
-   virtualenv --python=python3.9 .venv
+   python -m venv .venv
    ```
 
 3. Activate the virtual environment
@@ -79,6 +79,7 @@ This repo is inteded for use with Python 3.9
 4. Install the required dependencies:
 
    ```
+   bash install-deps.sh
    pip install -r requirements.txt
    ```
 
@@ -94,7 +95,7 @@ This repo is inteded for use with Python 3.9
 
    ```
    POLYGON_WALLET_PRIVATE_KEY=""
-   OPENAI_API_KEY=""
+   OPENAI_API_KEY=""  ###use minimax m2 model, https://platform.minimaxi.com/docs/api-reference/text-intro
    ```
 
 6. Load your wallet with USDC.
