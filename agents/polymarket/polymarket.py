@@ -44,6 +44,11 @@ class Polymarket:
 
         self.chain_id = 137  # POLYGON
         self.private_key = os.getenv("POLYGON_WALLET_PRIVATE_KEY")
+        
+        # Validate required environment variables
+        if not self.private_key:
+            raise EnvironmentError("Missing required environment variable: POLYGON_WALLET_PRIVATE_KEY")
+        
         self.polygon_rpc = "https://polygon-rpc.com"
         self.w3 = Web3(Web3.HTTPProvider(self.polygon_rpc))
 
@@ -215,25 +220,42 @@ class Polymarket:
             return self.map_api_to_market(market, token_id)
 
     def map_api_to_market(self, market, token_id: str = "") -> SimpleMarket:
-        market = {
+        # First check if market is active - this is the most important filter
+        if not market.get("active", False):
+            raise ValueError(f"Market is not active")
+        
+        # Check if market has CLOB token IDs - required for trading
+        if not market.get("clobTokenIds"):
+            raise ValueError(f"Market has no CLOB token IDs")
+        
+        # Check for other required fields
+        required_fields = ["id", "question", "endDate", "description", "funded", 
+                          "rewardsMinSize", "rewardsMaxSpread", "spread", "outcomes", "outcomePrices"]
+        
+        for field in required_fields:
+            if field not in market:
+                raise ValueError(f"Market missing required field: {field}")
+        
+        # Note: We allow unfunded markets as they may become funded later
+        # For actual trading, you should check the funded status
+        
+        market_data = {
             "id": int(market["id"]),
             "question": market["question"],
             "end": market["endDate"],
             "description": market["description"],
             "active": market["active"],
-            # "deployed": market["deployed"],
             "funded": market["funded"],
             "rewardsMinSize": float(market["rewardsMinSize"]),
             "rewardsMaxSpread": float(market["rewardsMaxSpread"]),
-            # "volume": float(market["volume"]),
             "spread": float(market["spread"]),
             "outcomes": str(market["outcomes"]),
             "outcome_prices": str(market["outcomePrices"]),
             "clob_token_ids": str(market["clobTokenIds"]),
         }
         if token_id:
-            market["clob_token_ids"] = token_id
-        return market
+            market_data["clob_token_ids"] = token_id
+        return market_data
 
     def get_all_events(self, tradeable_only: bool = False, limit: int = 100, max_events: int = None) -> "list[SimpleEvent]":
         """
@@ -345,7 +367,6 @@ class Polymarket:
         tradeable_events = []
         filter_stats = {
             "not_active": 0,
-            "restricted": 0,
             "archived": 0,
             "closed": 0,
             "total": len(events)
@@ -354,7 +375,6 @@ class Polymarket:
         for event in events:
             if (
                 event.active
-                and not event.restricted
                 and not event.archived
                 and not event.closed
             ):
@@ -363,8 +383,6 @@ class Polymarket:
                 # Track why event was filtered out
                 if not event.active:
                     filter_stats["not_active"] += 1
-                if event.restricted:
-                    filter_stats["restricted"] += 1
                 if event.archived:
                     filter_stats["archived"] += 1
                 if event.closed:
@@ -374,7 +392,6 @@ class Polymarket:
         if filter_stats["total"] > 0:
             print(f"\n=== Filtering Summary ===")
             print(f"Total events: {filter_stats['total']}")
-            print(f"Filtered out - restricted: {filter_stats['restricted']}")
             print(f"Filtered out - not active: {filter_stats['not_active']}")
             print(f"Filtered out - archived: {filter_stats['archived']}")
             print(f"Filtered out - closed: {filter_stats['closed']}")

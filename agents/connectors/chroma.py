@@ -10,6 +10,18 @@ from agents.polymarket.gamma import GammaMarketClient
 from agents.utils.objects import SimpleEvent, SimpleMarket
 
 
+def get_embedding_function():
+    """获取 SiliconFlow Embeddings 函数"""
+    api_key = os.getenv("EMBEDDING_API_KEY", "")
+    api_base = os.getenv("EMBEDDING_API_BASE", "https://api.siliconflow.cn/v1")
+    
+    return OpenAIEmbeddings(
+        model="Qwen/Qwen3-Embedding-8B",
+        base_url=api_base,
+        api_key=api_key
+    )
+
+
 class PolymarketRAG:
     def __init__(self, local_db_directory=None, embedding_function=None) -> None:
         self.gamma_client = GammaMarketClient()
@@ -24,7 +36,7 @@ class PolymarketRAG:
         )
         loaded_docs = loader.load()
 
-        embedding_function = OpenAIEmbeddings(model="text-embedding-3-small")
+        embedding_function = get_embedding_function()
         Chroma.from_documents(
             loaded_docs, embedding_function, persist_directory=vector_db_directory
         )
@@ -47,7 +59,7 @@ class PolymarketRAG:
     def query_local_markets_rag(
         self, local_directory=None, query=None
     ) -> "list[tuple]":
-        embedding_function = OpenAIEmbeddings(model="text-embedding-3-small")
+        embedding_function = get_embedding_function()
         local_db = Chroma(
             persist_directory=local_directory, embedding_function=embedding_function
         )
@@ -73,18 +85,86 @@ class PolymarketRAG:
             return metadata
 
         loader = JSONLoader(
-            file_path=local_file_path,
+            file_path=local_file_path,  # Use the file path, not directory
             jq_schema=".[]",
             content_key="description",
             text_content=False,
             metadata_func=metadata_func,
         )
         loaded_docs = loader.load()
-        embedding_function = OpenAIEmbeddings(model="text-embedding-3-small")
-        vector_db_directory = f"{local_events_directory}/chroma"
-        local_db = Chroma.from_documents(
-            loaded_docs, embedding_function, persist_directory=vector_db_directory
-        )
+        
+        # Validate loaded documents
+        if not loaded_docs:
+            print("Warning: No documents loaded from JSON file")
+            return []
+        
+        print(f"Loaded {len(loaded_docs)} documents for embedding")
+        
+        # Check for valid description content
+        valid_docs = []
+        for doc in loaded_docs:
+            if doc.page_content and doc.page_content.strip():
+                valid_docs.append(doc)
+            else:
+                print(f"Warning: Document with empty content skipped: {doc.metadata}")
+        
+        if not valid_docs:
+            print("Error: No valid documents with content found")
+            return []
+        
+        print(f"Processing {len(valid_docs)} valid documents for embedding")
+        
+        try:
+            # Use SiliconFlow Embeddings
+            embedding_function = get_embedding_function()
+            print(f"Using SiliconFlow API: Qwen/Qwen3-Embedding-8B")
+            
+            # Process in smaller batches to avoid API issues
+            batch_size = 10  # Reduce batch size for better stability
+            local_db = None
+            vector_db_directory = f"{local_events_directory}/chroma"
+            
+            # Clean up existing database directory if it exists to avoid readonly errors
+            import shutil
+            if os.path.exists(vector_db_directory):
+                try:
+                    shutil.rmtree(vector_db_directory)
+                    print(f"Cleaned up existing vector database directory: {vector_db_directory}")
+                except Exception as cleanup_error:
+                    print(f"Warning: Could not clean up vector database directory: {cleanup_error}")
+            
+            for i in range(0, len(valid_docs), batch_size):
+                batch = valid_docs[i:i + batch_size]
+                print(f"Processing batch {i//batch_size + 1}/{(len(valid_docs) + batch_size - 1)//batch_size} ({len(batch)} documents)")
+                
+                try:
+                    if local_db is None:
+                        # First batch: create the database
+                        local_db = Chroma.from_documents(
+                            batch, embedding_function, persist_directory=vector_db_directory
+                        )
+                    else:
+                        # Subsequent batches: add to existing database
+                        local_db.add_documents(batch)
+                    print(f"  ✓ Batch {i//batch_size + 1} completed successfully")
+                except Exception as batch_error:
+                    print(f"  ✗ Error processing batch {i//batch_size + 1}: {batch_error}")
+                    import traceback
+                    traceback.print_exc()
+                    # Continue with next batch
+                    continue
+            
+            if local_db is None:
+                print("Error: Failed to create vector database after all retries")
+                return []
+            
+            print(f"Successfully created vector database with {len(valid_docs)} documents")
+            
+        except Exception as e:
+            print(f"Error creating vector database: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
         # query
         return local_db.similarity_search_with_score(query=prompt)
@@ -117,11 +197,79 @@ class PolymarketRAG:
             metadata_func=metadata_func,
         )
         loaded_docs = loader.load()
-        embedding_function = OpenAIEmbeddings(model="text-embedding-3-small")
-        vector_db_directory = f"{local_events_directory}/chroma"
-        local_db = Chroma.from_documents(
-            loaded_docs, embedding_function, persist_directory=vector_db_directory
-        )
+        
+        # Validate loaded documents
+        if not loaded_docs:
+            print("Warning: No documents loaded from JSON file")
+            return []
+        
+        print(f"Loaded {len(loaded_docs)} documents for embedding")
+        
+        # Check for valid description content
+        valid_docs = []
+        for doc in loaded_docs:
+            if doc.page_content and doc.page_content.strip():
+                valid_docs.append(doc)
+            else:
+                print(f"Warning: Document with empty content skipped: {doc.metadata}")
+        
+        if not valid_docs:
+            print("Error: No valid documents with content found")
+            return []
+        
+        print(f"Processing {len(valid_docs)} valid documents for embedding")
+        
+        try:
+            # Use SiliconFlow Embeddings
+            embedding_function = get_embedding_function()
+            print(f"Using SiliconFlow API: Qwen/Qwen3-Embedding-8B")
+            
+            # Process in smaller batches to avoid API issues
+            batch_size = 10  # Reduce batch size for better stability
+            local_db = None
+            vector_db_directory = f"{local_events_directory}/chroma"
+            
+            # Clean up existing database directory if it exists to avoid readonly errors
+            import shutil
+            if os.path.exists(vector_db_directory):
+                try:
+                    shutil.rmtree(vector_db_directory)
+                    print(f"Cleaned up existing vector database directory: {vector_db_directory}")
+                except Exception as cleanup_error:
+                    print(f"Warning: Could not clean up vector database directory: {cleanup_error}")
+            
+            for i in range(0, len(valid_docs), batch_size):
+                batch = valid_docs[i:i + batch_size]
+                print(f"Processing batch {i//batch_size + 1}/{(len(valid_docs) + batch_size - 1)//batch_size} ({len(batch)} documents)")
+                
+                try:
+                    if local_db is None:
+                        # First batch: create the database
+                        local_db = Chroma.from_documents(
+                            batch, embedding_function, persist_directory=vector_db_directory
+                        )
+                    else:
+                        # Subsequent batches: add to existing database
+                        local_db.add_documents(batch)
+                    print(f"  ✓ Batch {i//batch_size + 1} completed successfully")
+                except Exception as batch_error:
+                    print(f"  ✗ Error processing batch {i//batch_size + 1}: {batch_error}")
+                    import traceback
+                    traceback.print_exc()
+                    # Continue with next batch
+                    continue
+            
+            if local_db is None:
+                print("Error: Failed to create vector database after all retries")
+                return []
+            
+            print(f"Successfully created vector database with {len(valid_docs)} documents")
+            
+        except Exception as e:
+            print(f"Error creating vector database: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
         # query
         return local_db.similarity_search_with_score(query=prompt)

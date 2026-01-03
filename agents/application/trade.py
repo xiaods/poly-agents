@@ -22,16 +22,26 @@ class Trader:
         self.clear_local_dbs()
 
     def clear_local_dbs(self) -> None:
+        # Use absolute paths based on project root
+        project_root = Path(__file__).parent.parent.parent
+        events_db = project_root / "local_db_events"
+        markets_db = project_root / "local_db_markets"
+        
         try:
-            shutil.rmtree("local_db_events")
-        except:
-            pass
+            if events_db.exists():
+                shutil.rmtree(events_db)
+                print(f"Cleared: {events_db}")
+        except Exception as e:
+            print(f"Error clearing events db: {e}")
+        
         try:
-            shutil.rmtree("local_db_markets")
-        except:
-            pass
+            if markets_db.exists():
+                shutil.rmtree(markets_db)
+                print(f"Cleared: {markets_db}")
+        except Exception as e:
+            print(f"Error clearing markets db: {e}")
 
-    def one_best_trade(self) -> None:
+    def one_best_trade(self, max_retries: int = 3, retry_count: int = 0) -> None:
         """
 
         one_best_trade is a strategy that evaluates all events, markets, and orderbooks
@@ -45,7 +55,7 @@ class Trader:
             self.pre_trade_logic()
 
             print("Step 1: Getting tradeable events...")
-            events = self.polymarket.get_all_tradeable_events()
+            events = self.polymarket.get_all_tradeable_events(limit=100, max_events=500, min_tradeable=10)
             print(f"1. FOUND {len(events)} EVENTS")
             
             if len(events) == 0:
@@ -84,6 +94,14 @@ class Trader:
             print("Step 6: Formatting trade amount...")
             amount = self.agent.format_trade_prompt_for_execution(best_trade)
             print(f"6. TRADE AMOUNT: {amount}")
+            
+            print("\n=== Trade Summary ===")
+            print(f"Market: {market[0].dict()['metadata']['question']}")
+            print(f"Trade: {best_trade}")
+            print(f"Amount: ${amount:.2f}")
+            print(f"USDC Balance: ${self.polymarket.get_usdc_balance():.2f}")
+            print("=" * 50)
+            
             # Please refer to TOS before uncommenting: polymarket.com/tos
             # trade = self.polymarket.execute_market_order(market, amount)
             # print(f"7. TRADED {trade}")
@@ -93,8 +111,13 @@ class Trader:
             print(f"Error: {e}")
             print("\nFull traceback:")
             traceback.print_exc()
-            print("\nRetrying...")
-            self.one_best_trade()
+            
+            if retry_count < max_retries:
+                print(f"\nRetrying... (Attempt {retry_count + 1}/{max_retries})")
+                self.one_best_trade(max_retries=max_retries, retry_count=retry_count + 1)
+            else:
+                print(f"\nMax retries ({max_retries}) reached. Giving up.")
+                raise
 
     def maintain_positions(self):
         pass

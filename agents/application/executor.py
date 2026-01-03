@@ -31,6 +31,13 @@ def retain_keys(data, keys_to_retain):
 class Executor:
     def __init__(self, default_model='MiniMax-M2.1-lightning') -> None:
         load_dotenv()
+        
+        # Validate required environment variables
+        required_env_vars = ["OPENAI_API_KEY"]
+        missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+        if missing_vars:
+            raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
+        
         max_token_model = {'MiniMax-M2.1-lightning':204800, 'MiniMax-M2.1':204800}
         self.token_limit = max_token_model.get(default_model)
         self.prompter = Prompter()
@@ -127,7 +134,7 @@ class Executor:
         result = self.llm.invoke(prompt)
         return result.content
 
-    def filter_events_with_rag(self, events: "list[SimpleEvent]") -> str:
+    def filter_events_with_rag(self, events: "list[SimpleEvent]") -> "list[tuple]":
         prompt = self.prompter.filter_events()
         print()
         print("... prompting ... ", prompt)
@@ -135,17 +142,24 @@ class Executor:
         return self.chroma.events(events, prompt)
 
     def map_filtered_events_to_markets(
-        self, filtered_events: "list[SimpleEvent]"
+        self, filtered_events: "list[tuple]"
     ) -> "list[SimpleMarket]":
         markets = []
-        for idx, e in enumerate(filtered_events):
+        error_stats = {
+            "not_active": 0,
+            "missing_outcome_prices": 0,
+            "missing_clob_token_ids": 0,
+            "other_errors": 0,
+            "total_market_ids": 0,
+            "successful": 0,
+            "failed": 0
+        }
+        
+        for idx, event_tuple in enumerate(filtered_events):
             try:
                 # filtered_events is a list of tuples from RAG: (Document, score)
-                if isinstance(e, tuple):
-                    event_doc = e[0]
-                    data = json.loads(event_doc.json())
-                else:
-                    data = json.loads(e.json())
+                event_doc = event_tuple[0]
+                data = json.loads(event_doc.json())
                 
                 market_ids_str = data.get("metadata", {}).get("markets", "")
                 if not market_ids_str:
@@ -153,6 +167,7 @@ class Executor:
                     continue
                     
                 market_ids = market_ids_str.split(",")
+                error_stats["total_market_ids"] += len(market_ids)
                 print(f"Processing event {idx}: {len(market_ids)} markets")
                 
                 for market_id in market_ids:
@@ -162,24 +177,61 @@ class Executor:
                         market_data = self.gamma.get_market(market_id.strip())
                         formatted_market_data = self.polymarket.map_api_to_market(market_data)
                         markets.append(formatted_market_data)
-                    except Exception as market_error:
-                        print(f"Error fetching market {market_id}: {market_error}")
-                        continue
+                        error_stats["successful"] += 1
+                    except ValueError as ve:
+                        error_stats["failed"] += 1
+                        error_msg = str(ve)
+                        if "not active" in error_msg:
+                            error_stats["not_active"] += 1
+                        elif "outcomePrices" in error_msg:
+                            error_stats["missing_outcome_prices"] += 1
+                        elif "CLOB token IDs" in error_msg:
+                            error_stats["missing_clob_token_ids"] += 1
+                        else:
+                            error_stats["other_errors"] += 1
+                        print(f"  ✗ Error fetching market {market_id}: {error_msg}")
+                    except Exception as e:
+                        error_stats["failed"] += 1
+                        error_stats["other_errors"] += 1
+                        print(f"  ✗ Error fetching market {market_id}: {e}")
             except Exception as event_error:
                 print(f"Error processing event {idx}: {event_error}")
                 import traceback
                 traceback.print_exc()
                 continue
+        
+        # Print summary statistics
+        print("\n=== Market Mapping Statistics ===")
+        print(f"Total events: {len(filtered_events)}")
+        print(f"Events with markets: {len([e for e in filtered_events if e[0].metadata.get('markets')])}")
+        print(f"Events without markets: {len(filtered_events) - len([e for e in filtered_events if e[0].metadata.get('markets')])}")
+        print(f"Total market IDs to fetch: {error_stats['total_market_ids']}")
+        print(f"Successfully fetched: {error_stats['successful']}")
+        print(f"Failed to fetch: {error_stats['failed']}")
+        print("\nError breakdown:")
+        if error_stats['not_active'] > 0:
+            print(f"  Not active (filtered out): {error_stats['not_active']}")
+        if error_stats['missing_outcome_prices'] > 0:
+            print(f"  Missing outcomePrices: {error_stats['missing_outcome_prices']}")
+        if error_stats['missing_clob_token_ids'] > 0:
+            print(f"  Missing CLOB token IDs: {error_stats['missing_clob_token_ids']}")
+        if error_stats['other_errors'] > 0:
+            print(f"  Other errors: {error_stats['other_errors']}")
+        print(f"Final markets count (active only): {len(markets)}")
+        print("==================================================\n")
+        
+        return markets
+        
         return markets
 
-    def filter_markets(self, markets) -> "list[tuple]":
+    def filter_markets(self, markets: "list[SimpleMarket]") -> "list[tuple]":
         prompt = self.prompter.filter_markets()
         print()
         print("... prompting ... ", prompt)
         print()
         return self.chroma.markets(markets, prompt)
 
-    def source_best_trade(self, market_object) -> str:
+    def source_best_trade(self, market_object: tuple) -> str:
         market_document = market_object[0].dict()
         market = market_document["metadata"]
         outcome_prices = ast.literal_eval(market["outcome_prices"])
@@ -207,11 +259,38 @@ class Executor:
         return content
 
     def format_trade_prompt_for_execution(self, best_trade: str) -> float:
-        data = best_trade.split(",")
-        # price = re.findall("\d+\.\d+", data[0])[0]
-        size = re.findall("\d+\.\d+", data[1])[0]
-        usdc_balance = self.polymarket.get_usdc_balance()
-        return float(size) * usdc_balance
+        try:
+            # Parse the trade format: price:0.5, size:0.1, side:BUY
+            lines = best_trade.strip().split('\n')
+            size_value = None
+            
+            for line in lines:
+                line = line.strip()
+                if line.startswith('size:'):
+                    # Extract size value after "size:"
+                    size_match = re.search(r'size:\s*([\d.]+)', line)
+                    if size_match:
+                        size_value = float(size_match.group(1))
+                        break
+            
+            if size_value is None:
+                print(f"Warning: Could not parse size from trade: {best_trade}")
+                # Try fallback parsing
+                size_match = re.search(r'size[:\s]*([\d.]+)', best_trade)
+                if size_match:
+                    size_value = float(size_match.group(1))
+                else:
+                    raise ValueError(f"Cannot parse size from: {best_trade}")
+            
+            usdc_balance = self.polymarket.get_usdc_balance()
+            trade_amount = size_value * usdc_balance
+            
+            print(f"Size: {size_value}, USDC Balance: {usdc_balance}, Trade Amount: {trade_amount}")
+            return trade_amount
+        except Exception as e:
+            print(f"Error parsing trade amount: {e}")
+            print(f"Best trade content: {best_trade}")
+            raise
 
     def source_best_market_to_create(self, filtered_markets) -> str:
         prompt = self.prompter.create_new_market(filtered_markets)
