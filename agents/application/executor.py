@@ -260,27 +260,53 @@ class Executor:
 
     def format_trade_prompt_for_execution(self, best_trade: str) -> float:
         try:
-            # Parse the trade format: price:0.5, size:0.1, side:BUY
-            lines = best_trade.strip().split('\n')
-            size_value = None
-            
-            for line in lines:
-                line = line.strip()
-                if line.startswith('size:'):
-                    # Extract size value after "size:"
-                    size_match = re.search(r'size:\s*([\d.]+)', line)
+            # Try to parse as JSON first (new format from LLM)
+            try:
+                import json
+                # Clean up the input: remove markdown code blocks if present
+                cleaned_trade = best_trade.strip()
+                if cleaned_trade.startswith('```json'):
+                    cleaned_trade = cleaned_trade[7:]  # Remove ```json
+                elif cleaned_trade.startswith('```'):
+                    cleaned_trade = cleaned_trade[3:]  # Remove ```
+                if cleaned_trade.endswith('```'):
+                    cleaned_trade = cleaned_trade[:-3]  # Remove ```
+                
+                cleaned_trade = cleaned_trade.strip()
+                trade_data = json.loads(cleaned_trade)
+                
+                size_value = float(trade_data.get('size', 0))
+                if size_value == 0:
+                    raise ValueError("Size value is 0")
+                
+                print(f"✓ Parsed JSON trade: {trade_data}")
+                
+            except json.JSONDecodeError:
+                # Fallback to line-by-line parsing (old format)
+                print("⚠ JSON parsing failed, trying line-by-line parsing...")
+                lines = best_trade.strip().split('\n')
+                size_value = None
+                
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith('size:'):
+                        # Extract size value after "size:"
+                        size_match = re.search(r'size:\s*([\d.]+)', line)
+                        if size_match:
+                            size_value = float(size_match.group(1))
+                            break
+                
+                if size_value is None:
+                    print(f"Warning: Could not parse size from trade: {best_trade}")
+                    # Try fallback parsing
+                    size_match = re.search(r'size[:\s]*([\d.]+)', best_trade)
                     if size_match:
                         size_value = float(size_match.group(1))
-                        break
+                    else:
+                        raise ValueError(f"Cannot parse size from: {best_trade}")
             
-            if size_value is None:
-                print(f"Warning: Could not parse size from trade: {best_trade}")
-                # Try fallback parsing
-                size_match = re.search(r'size[:\s]*([\d.]+)', best_trade)
-                if size_match:
-                    size_value = float(size_match.group(1))
-                else:
-                    raise ValueError(f"Cannot parse size from: {best_trade}")
+            if size_value is None or size_value == 0:
+                raise ValueError(f"Invalid size value: {size_value}")
             
             usdc_balance = self.polymarket.get_usdc_balance()
             trade_amount = size_value * usdc_balance

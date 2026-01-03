@@ -128,8 +128,16 @@ class PolymarketRAG:
             import shutil
             if os.path.exists(vector_db_directory):
                 try:
-                    shutil.rmtree(vector_db_directory)
-                    print(f"Cleaned up existing vector database directory: {vector_db_directory}")
+                    # Force remove with retries
+                    for _ in range(3):
+                        try:
+                            shutil.rmtree(vector_db_directory)
+                            print(f"Cleaned up existing vector database directory: {vector_db_directory}")
+                            break
+                        except Exception as cleanup_error:
+                            print(f"Warning: Could not clean up vector database directory (attempt {_ + 1}/3): {cleanup_error}")
+                            import time
+                            time.sleep(0.5)
                 except Exception as cleanup_error:
                     print(f"Warning: Could not clean up vector database directory: {cleanup_error}")
             
@@ -233,8 +241,16 @@ class PolymarketRAG:
             import shutil
             if os.path.exists(vector_db_directory):
                 try:
-                    shutil.rmtree(vector_db_directory)
-                    print(f"Cleaned up existing vector database directory: {vector_db_directory}")
+                    # Force remove with retries
+                    for _ in range(3):
+                        try:
+                            shutil.rmtree(vector_db_directory)
+                            print(f"Cleaned up existing vector database directory: {vector_db_directory}")
+                            break
+                        except Exception as cleanup_error:
+                            print(f"Warning: Could not clean up vector database directory (attempt {_ + 1}/3): {cleanup_error}")
+                            import time
+                            time.sleep(0.5)
                 except Exception as cleanup_error:
                     print(f"Warning: Could not clean up vector database directory: {cleanup_error}")
             
